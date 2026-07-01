@@ -1,4 +1,6 @@
-pyrealsense2
+# pyrealsense2 는 라즈베리파이(ARM)용 pip 휠이 없어 여기서 제외합니다.
+# librealsense 소스 빌드로 설치하세요 (README 참고). x86 PC에서는 아래 주석 해제:
+# pyrealsense2
 opencv-python
 numpy
 fastapi
