@@ -1,0 +1,7 @@
+pyrealsense2
+opencv-python
+numpy
+fastapi
+uvicorn[standard]
+requests
+python-multipart

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>D435i 캡처 파이프라인</title>
+<style>
+  :root { --bg:#0f1115; --panel:#1a1e27; --line:#2a2f3a; --fg:#e6e9ef;
+          --muted:#8b93a7; --accent:#4f8cff; --ok:#3ecf8e; --err:#ff5c5c; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,"Segoe UI",sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:16px 24px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); }
+  .dot.on { background:var(--ok); } .dot.off { background:var(--err); }
+  main { display:grid; grid-template-columns:340px 1fr; gap:20px; padding:20px; }
+  .panel { background:var(--panel); border:1px solid var(--line);
+           border-radius:12px; padding:16px; }
+  .panel h2 { font-size:14px; margin:0 0 12px; color:var(--muted);
+              text-transform:uppercase; letter-spacing:.05em; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  input { width:100%; padding:8px 10px; background:#0f1115; color:var(--fg);
+          border:1px solid var(--line); border-radius:8px; font-size:14px; }
+  .row { display:flex; gap:8px; }
+  button { flex:1; padding:10px; border:none; border-radius:8px; cursor:pointer;
+           font-size:14px; font-weight:600; color:#fff; background:var(--accent); }
+  button.stop { background:var(--err); } button.ghost { background:#2a2f3a; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .stat { display:flex; justify-content:space-between; font-size:13px;
+          padding:4px 0; border-bottom:1px dashed var(--line); }
+  .stat span:last-child { color:var(--fg); font-variant-numeric:tabular-nums; }
+  #preview { width:100%; border-radius:8px; background:#000; aspect-ratio:4/3;
+             object-fit:contain; }
+  .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr));
+             gap:12px; }
+  .card { background:#0f1115; border:1px solid var(--line); border-radius:10px;
+          overflow:hidden; }
+  .card .imgs { display:grid; grid-template-columns:1fr 1fr; }
+  .card img { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; }
+  .card .meta { padding:6px 8px; font-size:11px; color:var(--muted);
+                word-break:break-all; }
+  .msg { font-size:12px; margin-top:8px; min-height:16px; }
+  .msg.ok { color:var(--ok); } .msg.err { color:var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <span id="camDot" class="dot"></span>
+  <h1>D435i → PC 캡처 파이프라인</h1>
+  <span id="capBadge" style="margin-left:auto;font-size:13px;color:var(--muted)"></span>
+</header>
+
+<main>
+  <section class="panel" style="align-self:start">
+    <h2>연결 설정</h2>
+    <label>파이 에이전트 주소 (Tailscale)</label>
+    <input id="piUrl" placeholder="http://100.x.x.x:8000">
+    <label>PC 업로드 주소 (파이가 POST할 곳)</label>
+    <input id="uploadUrl" placeholder="http://100.89.111.76:9000/upload">
+    <label>캡처 간격 (초)</label>
+    <input id="interval" type="number" min="0.5" step="0.5" value="5">
+
+    <div class="row" style="margin-top:14px">
+      <button id="startBtn">자동 캡처 시작</button>
+      <button id="stopBtn" class="stop">정지</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="nowBtn" class="ghost">지금 한 장</button>
+      <button id="applyBtn" class="ghost">설정 적용</button>
+    </div>
+    <div id="msg" class="msg"></div>
+
+    <h2 style="margin-top:20px">상태</h2>
+    <div class="stat"><span>카메라</span><span id="sCam">-</span></div>
+    <div class="stat"><span>자동 캡처</span><span id="sCap">-</span></div>
+    <div class="stat"><span>간격</span><span id="sInt">-</span></div>
+    <div class="stat"><span>누적 캡처</span><span id="sCnt">-</span></div>
+    <div class="stat"><span>마지막 업로드</span><span id="sUp">-</span></div>
+    <div class="stat"><span>에러</span><span id="sErr">-</span></div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:20px">
+    <div class="panel">
+      <h2>라이브 프리뷰 (RGB)</h2>
+      <img id="preview" alt="프리뷰 — 파이 주소를 입력하세요">
+    </div>
+    <div class="panel">
+      <h2>저장된 캡처 <span id="galCount" style="color:var(--fg)"></span></h2>
+      <div id="gallery" class="gallery"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const PC = location.origin;                 // 이 UI를 서빙하는 PC 서버
+const PC_TAILSCALE = 'http://100.89.111.76:9000';  // 파이가 POST할 PC 주소
+const LS = {                                 // localStorage 키
+  pi: 'd435_pi', up: 'd435_up', int: 'd435_int'
+};
+
+// 저장된 설정 복원 (upload 기본값은 PC의 Tailscale 주소 — localhost 아님)
+$('piUrl').value = localStorage.getItem(LS.pi) || '';
+$('uploadUrl').value = localStorage.getItem(LS.up) || (PC_TAILSCALE + '/upload');
+$('interval').value = localStorage.getItem(LS.int) || '5';
+
+function saveCfg() {
+  localStorage.setItem(LS.pi, $('piUrl').value.trim());
+  localStorage.setItem(LS.up, $('uploadUrl').value.trim());
+  localStorage.setItem(LS.int, $('interval').value);
+}
+function piBase() { return $('piUrl').value.trim().replace(/\/$/, ''); }
+function cfgBody() {
+  return { interval: parseFloat($('interval').value),
+           upload_url: $('uploadUrl').value.trim() };
+}
+function showMsg(t, ok) {
+  const m = $('msg'); m.textContent = t; m.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+
+async function piPost(path, body) {
+  const base = piBase();
+  if (!base) { showMsg('파이 주소를 먼저 입력하세요', false); return null; }
+  try {
+    const r = await fetch(base + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : null
+    });
+    const j = await r.json();
+    if (!r.ok) { showMsg(j.error || ('HTTP ' + r.status), false); return null; }
+    return j;
+  } catch (e) { showMsg('파이 연결 실패: ' + e.message, false); return null; }
+}
+
+$('startBtn').onclick = async () => {
+  saveCfg();
+  const j = await piPost('/start', cfgBody());
+  if (j) showMsg('자동 캡처 시작됨', true);
+};
+$('stopBtn').onclick = async () => {
+  const j = await piPost('/stop');
+  if (j) showMsg('정지됨', true);
+};
+$('nowBtn').onclick = async () => {
+  saveCfg();
+  await piPost('/config', cfgBody());
+  const j = await piPost('/capture_now');
+  if (j) { showMsg('한 장 캡처 요청됨', true); setTimeout(loadGallery, 800); }
+};
+$('applyBtn').onclick = async () => {
+  saveCfg();
+  const j = await piPost('/config', cfgBody());
+  if (j) showMsg('설정 적용됨', true);
+  refreshPreview();
+};
+
+function refreshPreview() {
+  const base = piBase();
+  if (base) $('preview').src = base + '/stream.mjpg';
+}
+
+async function pollStatus() {
+  const base = piBase();
+  if (!base) return;
+  try {
+    const r = await fetch(base + '/status');
+    const s = await r.json();
+    $('camDot').className = 'dot ' + (s.camera_running ? 'on' : 'off');
+    $('sCam').textContent = s.camera_running ? '구동중' : (s.camera_error || '중지');
+    $('sCap').textContent = s.capture_enabled ? '● 진행중' : '정지';
+    $('sInt').textContent = s.interval + 's';
+    $('sCnt').textContent = s.count;
+    $('sUp').textContent = s.last_upload_ok === null ? '-'
+        : (s.last_upload_ok ? 'OK' : '실패');
+    $('sErr').textContent = s.last_error || '-';
+    $('capBadge').textContent = s.capture_enabled
+        ? `자동 캡처 중 · ${s.interval}s 간격 · ${s.count}장` : '';
+  } catch (e) { $('camDot').className = 'dot off'; $('sCam').textContent = '연결 안됨'; }
+}
+
+async function loadGallery() {
+  try {
+    const r = await fetch(PC + '/api/captures?limit=60');
+    const j = await r.json();
+    $('galCount').textContent = `(${j.count})`;
+    $('gallery').innerHTML = j.items.map(it => `
+      <div class="card">
+        <div class="imgs">
+          <img loading="lazy" src="${PC}/files/${it.color}" title="RGB">
+          <img loading="lazy" src="${PC}/files/${it.depthvis || it.depth}" title="Depth">
+        </div>
+        <div class="meta">${it.stamp}</div>
+      </div>`).join('');
+  } catch (e) { /* ignore */ }
+}
+
+refreshPreview();
+setInterval(pollStatus, 1500);
+setInterval(loadGallery, 5000);
+pollStatus(); loadGallery();
+</script>
+</body>
+</html>

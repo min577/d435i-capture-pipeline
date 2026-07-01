@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# 캡처 저장물 (런타임 생성)
+pc_server/captures/
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
