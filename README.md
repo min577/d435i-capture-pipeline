@@ -37,12 +37,45 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **pyrealsense2 참고**: 라즈베리파이(ARM)에서는 pip 휠이 없을 수 있다.
-> 그 경우 [librealsense](https://github.com/IntelRealSense/librealsense)를
-> 소스 빌드하거나 `pyrealsense2` ARM 빌드를 설치해야 한다. 카메라 인식 확인:
-> ```bash
-> rs-enumerate-devices   # librealsense 설치 시 제공
-> ```
+> **pyrealsense2 는 라즈베리파이(ARM)용 pip 휠이 없다.** (`Could not find a version
+> that satisfies the requirement pyrealsense2`) → librealsense 를 소스 빌드해야 한다.
+> requirements.txt 에서는 제외돼 있고, 아래 절차로 별도 설치한다.
+
+#### librealsense 소스 빌드 (Raspberry Pi OS Bookworm 64bit / aarch64 / Python 3.11 기준)
+```bash
+# 1) 빌드 도구
+sudo apt-get update
+sudo apt-get install -y git cmake build-essential \
+  libssl-dev libusb-1.0-0-dev libudev-dev pkg-config libgtk-3-dev python3-dev
+
+# 2) 소스 + USB 권한 규칙
+cd ~ && git clone https://github.com/IntelRealSense/librealsense.git
+cd librealsense && sudo ./scripts/setup_udev_rules.sh
+
+# 3) 빌드 (RSUSB 백엔드 = 커널 패치 불필요, Pi 권장). 20~40분 소요
+mkdir build && cd build
+cmake .. -DFORCE_RSUSB_BACKEND=true -DBUILD_PYTHON_BINDINGS=true \
+  -DPYTHON_EXECUTABLE=$(which python3) -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_EXAMPLES=false -DBUILD_GRAPHICAL_EXAMPLES=false
+make -j2 && sudo make install && sudo ldconfig
+#   메모리 부족으로 죽으면 make -j1 로 재시도
+
+# 4) 확인
+python3 -c "import pyrealsense2 as rs; print(rs.__version__)"
+```
+
+#### venv 에서 pyrealsense2 인식시키기
+소스 빌드한 pyrealsense2 는 시스템에 설치되므로, venv 를 `--system-site-packages`
+로 만들어야 pip 패키지와 함께 쓸 수 있다.
+```bash
+cd ~/d435i-capture-pipeline/pi_agent
+rm -rf .venv
+python3 -m venv .venv --system-site-packages
+source .venv/bin/activate
+pip install -r requirements.txt
+python -c "import pyrealsense2 as rs; print([d.get_info(rs.camera_info.name) for d in rs.context().devices])"
+# → ['Intel RealSense D435I'] 나오면 성공
+```
 
 ### 실행
 ```bash
